@@ -79,7 +79,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			log.Printf("[%d] Coordinator says done. Stopping worker...", os.Getpid())
 			done = true
 		case "map":
-			log.Printf("[%d] map %d %s\n", os.Getpid(), reply.TaskID, reply.InputFile)
+			log.Printf("[%d] working on map %d %s\n", os.Getpid(), reply.TaskID, reply.InputFile)
 			mapID := reply.TaskID
 			content := readFile(reply.InputFile)
 			intermediate := mapf(reply.InputFile, content)
@@ -106,7 +106,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				os.Rename(tmpfile.Name(), reduceFilename)
 			}
 		case "reduce":
-			log.Printf("[%d] reduce %d %s\n", os.Getpid(), reply.TaskID, reply.InputFile)
+			log.Printf("[%d] working on reduce %d %s\n", os.Getpid(), reply.TaskID, reply.InputFile)
 			reduceID := reply.TaskID
 			kva := []KeyValue{}
 			for mapID := 0; mapID < reply.NumMap; mapID++ {
@@ -129,7 +129,7 @@ func Worker(mapf func(string, string) []KeyValue,
 					kva = append(kva, kv)
 				}
 			}
-			// fmt.Printf("Done with reading intermediate files\n")
+			// log.Printf("[%d] Done with reading intermediate files\n", os.Getpid())
 			grouped := make(map[string][]string)
 			for _, kv := range kva {
 				grouped[kv.Key] = append(grouped[kv.Key], kv.Value)
@@ -139,14 +139,18 @@ func Worker(mapf func(string, string) []KeyValue,
 			if err != nil {
 				panic(err)
 			}
+			// log.Printf("[%d] Running reduce function...\n", os.Getpid())
 			for key := range grouped {
 				res := reducef(key, grouped[key])
 				// fmt.Printf("res=%s\n", res)
-				tmpfile.WriteString(key + " " + res + "\n")
+				_, err := tmpfile.WriteString(key + " " + res + "\n")
+				if err != nil {
+					panic(err)
+				}
 			}
 			tmpfile.Close()
+			// log.Printf("[%d] Renaming output file...\n", os.Getpid())
 			os.Rename(tmpfile.Name(), outfile)
-			// fmt.Printf("Renaming output files\n")
 		default:
 			time.Sleep(1 * time.Second)
 		}

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -55,20 +56,23 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 		return nil
 	case "map":
 		for i, task := range c.mapTasks {
-			if task.status == "pending" || (task.status == "running" && (now-task.startTime) > c.timeout) {
+			stale := task.status == "running" && (now-task.startTime) > c.timeout
+			if task.status == "pending" || stale {
+				log.Printf("Assgin map task %d (stale=%v)", task.id, stale)
 				c.mapTasks[i].status = "running"
 				c.mapTasks[i].startTime = now
 				reply.TaskType = "map"
 				reply.TaskID = i
 				reply.NumReduce = len(c.reduceTasks)
 				reply.InputFile = task.inputfile
-				// log.Printf("task.startTime = %d\n", task.startTime)
 				return nil
 			}
 		}
 	case "reduce":
 		for i, task := range c.reduceTasks {
-			if task.status == "pending" || (task.status == "running" && (now-task.startTime) > c.timeout) {
+			stale := task.status == "running" && (now-task.startTime) > c.timeout
+			if task.status == "pending" || stale {
+				log.Printf("Assgin reduce task %d (stale=%v)", task.id, stale)
 				c.reduceTasks[i].status = "running"
 				c.reduceTasks[i].startTime = now
 				reply.TaskType = "reduce"
@@ -135,6 +139,18 @@ func (c *Coordinator) Done() bool {
 	return c.phase == "done"
 }
 
+func removeFiles(pattern string) {
+	files, err := filepath.Glob(pattern)
+	if err != nil {
+		panic(err)
+	}
+	for _, f := range files {
+		if err := os.Remove(f); err != nil {
+			panic(err)
+		}
+	}
+}
+
 //
 // create a Coordinator.
 // main/mrcoordinator.go calls this function.
@@ -143,6 +159,7 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 	println("Initializing coordinator")
+	removeFiles("tmp-mr-out-*")
 	c.phase = "map"
 	c.numMapDone = 0
 	c.mapTasks = make([]mapTask, len(files))
