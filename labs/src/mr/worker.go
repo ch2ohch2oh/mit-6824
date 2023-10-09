@@ -1,10 +1,15 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"encoding/json"
+	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"log"
+	"net/rpc"
+	"os"
+	"time"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -13,6 +18,12 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
+
+type ByKey []KeyValue
+
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
 //
 // use ihash(key) % NReduce to choose the reduce
@@ -24,6 +35,28 @@ func ihash(key string) int {
 	return int(h.Sum32() & 0x7fffffff)
 }
 
+func readFile(filename string) string {
+	file, err := os.Open(filename)
+	if err != nil {
+		log.Fatalf("cannot open %v", filename)
+	}
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("cannot read %v", filename)
+	}
+	file.Close()
+	return string(content)
+}
+
+func finishTask(taskType string, id int) {
+	args := FinishTaskArgs{taskType, id}
+	reply := FinishTaskReply{}
+	ok := call("Coordinator.FinishTask", &args, &reply)
+	if ok {
+		return
+	}
+	log.Printf("Coordinator.FinishTask failed - maybe coordinator is donw?")
+}
 
 //
 // main/mrworker.go calls this function.
@@ -31,11 +64,94 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	done := false
+	for !done {
+		args := GetTaskArgs{}
+		reply := GetTaskReply{}
+		ok := call("Coordinator.GetTask", &args, &reply)
+		if !ok {
+			log.Println("Coordinator.GetTask failed")
+			time.Sleep(1 * time.Second)
+		}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
-
+		switch reply.TaskType {
+		case "done":
+			log.Printf("[%d] Coordinator says done. Stopping worker...", os.Getpid())
+			done = true
+		case "map":
+			log.Printf("[%d] map %d %s\n", os.Getpid(), reply.TaskID, reply.InputFile)
+			mapID := reply.TaskID
+			content := readFile(reply.InputFile)
+			intermediate := mapf(reply.InputFile, content)
+			groupByReduceID := make(map[int][]KeyValue)
+			for _, kv := range intermediate {
+				reduceID := ihash(kv.Key) % reply.NumReduce
+				groupByReduceID[reduceID] = append(groupByReduceID[reduceID], kv)
+			}
+			for reduceID := range groupByReduceID {
+				reduceFilename := fmt.Sprintf("tmp-mr-out-%d-%d", mapID, reduceID)
+				tmpfile, err := ioutil.TempFile("/tmp", reduceFilename)
+				if err != nil {
+					panic(err)
+				}
+				enc := json.NewEncoder(tmpfile)
+				for _, kv := range groupByReduceID[reduceID] {
+					err := enc.Encode(&kv)
+					if err != nil {
+						panic(err)
+					}
+					// fmt.Printf("%+v\n", kv)
+				}
+				tmpfile.Close()
+				os.Rename(tmpfile.Name(), reduceFilename)
+			}
+		case "reduce":
+			log.Printf("[%d] reduce %d %s\n", os.Getpid(), reply.TaskID, reply.InputFile)
+			reduceID := reply.TaskID
+			kva := []KeyValue{}
+			for mapID := 0; mapID < reply.NumMap; mapID++ {
+				filename := fmt.Sprintf("tmp-mr-out-%d-%d", mapID, reduceID)
+				_, err := os.Stat(filename)
+				if err != nil && os.IsNotExist(err) {
+					continue
+				}
+				file, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("Cannot open %s", filename)
+				}
+				dec := json.NewDecoder(file)
+				for {
+					kv := KeyValue{}
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					// fmt.Printf("%+v\n", kv)
+					kva = append(kva, kv)
+				}
+			}
+			// fmt.Printf("Done with reading intermediate files\n")
+			grouped := make(map[string][]string)
+			for _, kv := range kva {
+				grouped[kv.Key] = append(grouped[kv.Key], kv.Value)
+			}
+			outfile := fmt.Sprintf("mr-out-%d", reduceID)
+			tmpfile, err := ioutil.TempFile("/tmp", outfile)
+			if err != nil {
+				panic(err)
+			}
+			for key := range grouped {
+				res := reducef(key, grouped[key])
+				// fmt.Printf("res=%s\n", res)
+				tmpfile.WriteString(key + " " + res + "\n")
+			}
+			tmpfile.Close()
+			os.Rename(tmpfile.Name(), outfile)
+			// fmt.Printf("Renaming output files\n")
+		default:
+			time.Sleep(1 * time.Second)
+		}
+		finishTask(reply.TaskType, reply.TaskID)
+	}
 }
 
 //
@@ -86,6 +202,5 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 		return true
 	}
 
-	fmt.Println(err)
 	return false
 }
