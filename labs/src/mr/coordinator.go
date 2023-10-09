@@ -159,6 +159,7 @@ func removeFiles(pattern string) {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{}
 	println("Initializing coordinator")
+	// Make sure to remove intermediate files from previous runs
 	removeFiles("tmp-mr-out-*")
 	c.phase = "map"
 	c.numMapDone = 0
