@@ -11,6 +11,20 @@ import (
 	"time"
 )
 
+// Private type to track task status
+type taskStatus string
+
+const (
+	UNASSIGNED taskStatus = "unassigned"
+	ASSIGNED   taskStatus = "assigned"
+	DONE       taskStatus = "done"
+)
+
+type mrTask struct {
+	startTime int64
+	status    taskStatus
+}
+
 type mapTask struct {
 	id        int
 	inputfile string
@@ -25,62 +39,55 @@ type reduceTask struct {
 }
 
 type Coordinator struct {
-	mu            sync.Mutex
-	phase         string // map, reduce or done
-	mapTasks      []mapTask
-	numMapDone    int
-	reduceTasks   []reduceTask
+	mu sync.Mutex
+
+	mapFiles   []string
+	mapTasks   []mrTask
+	numMapDone int
+
+	reduceTasks   []mrTask
 	numReduceDone int
-	timeout       int64
-}
 
-// Your code here -- RPC handlers for the worker to call.
-
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
+	// Assigned tasks running more than timeout will be reassigned to other workers
+	timeout int64
 }
 
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
 	now := time.Now().Unix()
-	switch c.phase {
-	case "done":
-		reply.TaskType = "done"
-		return nil
-	case "map":
+
+	if c.numMapDone < len(c.mapFiles) { // Map phase
 		for i, task := range c.mapTasks {
-			stale := task.status == "running" && (now-task.startTime) > c.timeout
-			if task.status == "pending" || stale {
-				log.Printf("Assgin map task %d (stale=%v)", task.id, stale)
-				c.mapTasks[i].status = "running"
+			stale := task.status == ASSIGNED && (now-task.startTime) > c.timeout
+			if task.status == UNASSIGNED || stale {
+				log.Printf("Assgin map task %d (stale=%v)", i, stale)
+				c.mapTasks[i].status = ASSIGNED
 				c.mapTasks[i].startTime = now
-				reply.TaskType = "map"
+				reply.TaskType = Map
 				reply.TaskID = i
 				reply.NumReduce = len(c.reduceTasks)
-				reply.InputFile = task.inputfile
+				reply.InputFile = c.mapFiles[i]
 				return nil
 			}
 		}
-	case "reduce":
+	} else if c.numReduceDone < len(c.reduceTasks) { // Reduce phase
 		for i, task := range c.reduceTasks {
-			stale := task.status == "running" && (now-task.startTime) > c.timeout
-			if task.status == "pending" || stale {
-				log.Printf("Assgin reduce task %d (stale=%v)", task.id, stale)
-				c.reduceTasks[i].status = "running"
+			stale := task.status == ASSIGNED && (now-task.startTime) > c.timeout
+			if task.status == UNASSIGNED || stale {
+				log.Printf("Assgin reduce task %d (stale=%v)", i, stale)
+				c.reduceTasks[i].status = ASSIGNED
 				c.reduceTasks[i].startTime = now
-				reply.TaskType = "reduce"
+				reply.TaskType = Reduce
 				reply.TaskID = i
 				reply.NumMap = len(c.mapTasks)
 				return nil
 			}
 		}
+	} else { // All tasks done
+		reply.TaskType = Done
+		return nil
 	}
 	return nil
 }
@@ -89,24 +96,22 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs, reply *FinishTaskReply) e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch args.TaskType {
-	case "map":
-		if c.mapTasks[args.TaskID].status != "done" {
-			c.mapTasks[args.TaskID].status = "done"
+	case Map:
+		if c.mapTasks[args.TaskID].status != DONE {
+			c.mapTasks[args.TaskID].status = DONE
 			c.numMapDone += 1
 			log.Printf("Map task %d done\n", args.TaskID)
 		}
 		if c.numMapDone == len(c.mapTasks) {
-			c.phase = "reduce"
 			log.Printf("Starting reduce phase with %d reducer tasks\n", len(c.reduceTasks))
 		}
-	case "reduce":
-		if c.reduceTasks[args.TaskID].status != "done" {
-			c.reduceTasks[args.TaskID].status = "done"
+	case Reduce:
+		if c.reduceTasks[args.TaskID].status != DONE {
+			c.reduceTasks[args.TaskID].status = DONE
 			c.numReduceDone += 1
 			log.Printf("Reduce task %d done\n", args.TaskID)
 		}
 		if c.numReduceDone == len(c.reduceTasks) {
-			c.phase = "done"
 			log.Printf("Done\n")
 		}
 	}
@@ -136,7 +141,7 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.phase == "done"
+	return c.numMapDone == len(c.mapFiles) && c.numReduceDone == len(c.reduceTasks)
 }
 
 func removeFiles(pattern string) {
@@ -161,16 +166,17 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	println("Initializing coordinator")
 	// Make sure to remove intermediate files from previous runs
 	removeFiles("tmp-mr-out-*")
-	c.phase = "map"
 	c.numMapDone = 0
-	c.mapTasks = make([]mapTask, len(files))
+	c.mapTasks = make([]mrTask, len(files))
+	c.mapFiles = make([]string, len(files))
 	for i := 0; i < len(files); i++ {
-		c.mapTasks[i] = mapTask{i, files[i], 0, "pending"}
+		c.mapTasks[i] = mrTask{status: UNASSIGNED, startTime: 0}
+		c.mapFiles[i] = files[i]
 	}
 	c.numReduceDone = 0
-	c.reduceTasks = make([]reduceTask, nReduce)
+	c.reduceTasks = make([]mrTask, nReduce)
 	for i := 0; i < nReduce; i++ {
-		c.reduceTasks[i] = reduceTask{i, 0, "pending"}
+		c.reduceTasks[i] = mrTask{status: UNASSIGNED, startTime: 0}
 	}
 	c.timeout = 10
 	c.server()

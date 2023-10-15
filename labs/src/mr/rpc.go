@@ -11,34 +11,29 @@ import (
 	"strconv"
 )
 
-//
-// example to show how to declare the arguments
-// and reply for an RPC.
-//
-
-type ExampleArgs struct {
-	X int
-}
-
-type ExampleReply struct {
-	Y int
-}
-
 // Add your RPC definitions here.
+
+type TaskType string
+
+const (
+	Map    TaskType = "map"
+	Reduce TaskType = "reduce"
+	Done   TaskType = "done"
+)
 
 type GetTaskArgs struct {
 }
 
 type GetTaskReply struct {
-	TaskType  string // map or reduce
+	TaskType  TaskType
 	TaskID    int
-	NumMap    int
-	NumReduce int
-	InputFile string
+	NumMap    int    // Number of map files - used by the reducer to determine input files
+	NumReduce int    // Number of reduce files - used by the mapper to determine output files
+	InputFile string // Input file path for the mapper
 }
 
 type FinishTaskArgs struct {
-	TaskType string
+	TaskType TaskType
 	TaskID   int
 }
 
