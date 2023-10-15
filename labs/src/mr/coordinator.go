@@ -36,23 +36,13 @@ type Coordinator struct {
 
 // Your code here -- RPC handlers for the worker to call.
 
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
-}
-
 func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := time.Now().Unix()
 	switch c.phase {
 	case "done":
-		reply.TaskType = "done"
+		reply.TaskType = Done
 		return nil
 	case "map":
 		for i, task := range c.mapTasks {
@@ -61,7 +51,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				log.Printf("Assgin map task %d (stale=%v)", task.id, stale)
 				c.mapTasks[i].status = "running"
 				c.mapTasks[i].startTime = now
-				reply.TaskType = "map"
+				reply.TaskType = Map
 				reply.TaskID = i
 				reply.NumReduce = len(c.reduceTasks)
 				reply.InputFile = task.inputfile
@@ -75,7 +65,7 @@ func (c *Coordinator) GetTask(args *GetTaskArgs, reply *GetTaskReply) error {
 				log.Printf("Assgin reduce task %d (stale=%v)", task.id, stale)
 				c.reduceTasks[i].status = "running"
 				c.reduceTasks[i].startTime = now
-				reply.TaskType = "reduce"
+				reply.TaskType = Reduce
 				reply.TaskID = i
 				reply.NumMap = len(c.mapTasks)
 				return nil
@@ -89,7 +79,7 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs, reply *FinishTaskReply) e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch args.TaskType {
-	case "map":
+	case Map:
 		if c.mapTasks[args.TaskID].status != "done" {
 			c.mapTasks[args.TaskID].status = "done"
 			c.numMapDone += 1
@@ -99,7 +89,7 @@ func (c *Coordinator) FinishTask(args *FinishTaskArgs, reply *FinishTaskReply) e
 			c.phase = "reduce"
 			log.Printf("Starting reduce phase with %d reducer tasks\n", len(c.reduceTasks))
 		}
-	case "reduce":
+	case Reduce:
 		if c.reduceTasks[args.TaskID].status != "done" {
 			c.reduceTasks[args.TaskID].status = "done"
 			c.numReduceDone += 1

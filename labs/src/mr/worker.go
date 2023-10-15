@@ -48,7 +48,7 @@ func readFile(filename string) string {
 	return string(content)
 }
 
-func finishTask(taskType string, id int) {
+func finishTask(taskType TaskType, id int) {
 	args := FinishTaskArgs{taskType, id}
 	reply := FinishTaskReply{}
 	ok := call("Coordinator.FinishTask", &args, &reply)
@@ -155,35 +155,6 @@ func Worker(mapf func(string, string) []KeyValue,
 			time.Sleep(1 * time.Second)
 		}
 		finishTask(reply.TaskType, reply.TaskID)
-	}
-}
-
-//
-// example function to show how to make an RPC call to the coordinator.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample() {
-
-	// declare an argument structure.
-	args := ExampleArgs{}
-
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
 	}
 }
 
